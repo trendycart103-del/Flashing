@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build:
-    name: Extract and Build FlashForge APK
+    name: Extract and Build FlashForge
     runs-on: ubuntu-latest
 
     steps:
@@ -28,53 +28,71 @@ jobs:
           java-version: "17"
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
 
       - name: Install Android SDK Components
         run: |
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
 
       - name: Locate ZIP File
         id: locate_zip
         run: |
-          ZIP_FILE=$(find "$GITHUB_WORKSPACE" -maxdepth 2 -type f -name "*.zip" | head -n 1)
+          ZIP_FILE=$(find "$GITHUB_WORKSPACE" \
+            -maxdepth 2 \
+            -type f \
+            -name "*.zip" \
+            | head -n 1)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No ZIP file found in repository."
+            echo "ERROR: No ZIP file found!"
             exit 1
           fi
 
           echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
-          echo "Found ZIP: $ZIP_FILE"
+
+          echo "ZIP file found:"
+          echo "$ZIP_FILE"
 
       - name: Extract Android Project
         run: |
           mkdir -p "$GITHUB_WORKSPACE/extracted"
 
-          unzip -q "$ZIP_FILE" -d "$GITHUB_WORKSPACE/extracted"
+          unzip -q "$ZIP_FILE" \
+            -d "$GITHUB_WORKSPACE/extracted"
 
-          echo "Extracted ZIP contents:"
-          find "$GITHUB_WORKSPACE/extracted" -maxdepth 3 -type f | head -100
+          echo "ZIP extraction completed."
 
       - name: Locate Android Project
         run: |
           PROJECT_DIR=$(find "$GITHUB_WORKSPACE/extracted" \
-            -type f -name "settings.gradle.kts" \
-            -exec dirname {} \; | head -n 1)
+            -type f \
+            -name "settings.gradle.kts" \
+            -exec dirname {} \; \
+            | head -n 1)
 
           if [ -z "$PROJECT_DIR" ]; then
             PROJECT_DIR=$(find "$GITHUB_WORKSPACE/extracted" \
-              -type f -name "settings.gradle" \
-              -exec dirname {} \; | head -n 1)
+              -type f \
+              -name "settings.gradle" \
+              -exec dirname {} \; \
+              | head -n 1)
           fi
 
           if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: Android Gradle project not found."
+            echo "ERROR: Android project not found!"
+            echo "ZIP must contain settings.gradle or settings.gradle.kts"
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Android project located at: $PROJECT_DIR"
+
+          echo "Android project found:"
+          echo "$PROJECT_DIR"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -84,29 +102,42 @@ jobs:
       - name: Build Debug APK
         run: |
           cd "$PROJECT_DIR"
-          gradle assembleDebug --no-daemon
+
+          gradle assembleDebug \
+            --no-daemon \
+            --stacktrace
 
       - name: Build Release APK
         run: |
           cd "$PROJECT_DIR"
-          gradle assembleRelease --no-daemon
 
-      - name: Verify APK Files
+          gradle assembleRelease \
+            --no-daemon \
+            --stacktrace
+
+      - name: Verify APK
         run: |
-          echo "Checking generated APKs..."
+          APK_DIR="$PROJECT_DIR/app/build/outputs/apk"
 
-          find "$PROJECT_DIR/app/build/outputs/apk" \
-            -type f -name "*.apk" -print
+          echo "Searching for APK files..."
 
-          DEBUG_APK=$(find "$PROJECT_DIR/app/build/outputs/apk/debug" \
-            -type f -name "*.apk" | head -n 1)
+          find "$APK_DIR" \
+            -type f \
+            -name "*.apk" \
+            -print
+
+          DEBUG_APK=$(find "$APK_DIR/debug" \
+            -type f \
+            -name "*.apk" \
+            | head -n 1)
 
           if [ -z "$DEBUG_APK" ]; then
-            echo "ERROR: Debug APK was not generated."
+            echo "ERROR: Debug APK not found!"
             exit 1
           fi
 
-          echo "Debug APK found: $DEBUG_APK"
+          echo "DEBUG APK VERIFIED:"
+          echo "$DEBUG_APK"
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
@@ -124,15 +155,14 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      - name: Build Summary
+      - name: Build Information
         if: always()
         run: |
-          echo "=================================="
-          echo "FlashForge Android Build Summary"
-          echo "=================================="
-          echo "Project Version: 1.50"
-          echo "Build System: GitHub Actions"
-          echo "Java Version: 17"
-          echo "Gradle Version: 8.7"
+          echo "===================================="
+          echo "FlashForge Android Build"
+          echo "===================================="
+          echo "Version: 1.50"
+          echo "Java: 17"
+          echo "Gradle: 8.7"
           echo "Android SDK: API 34"
-          echo "=================================="
+          echo "===================================="
