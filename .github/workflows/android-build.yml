@@ -1,5 +1,5 @@
 
-name: FlashForge v1.52 Android Build
+name: FlashForge v1.52 - Android Build
 
 on:
   workflow_dispatch:
@@ -12,109 +12,127 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: flashforge-android-build
+  cancel-in-progress: true
+
 jobs:
   build:
-    name: Extract, Test and Compile FlashForge
+    name: Extract, Test and Build APK
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
-      # 1. Download repository files
+
+      # STEP 1: Checkout Repository
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2. Find and extract the uploaded ZIP
-      - name: Extract FlashForge ZIP
+      # STEP 2: Find and Extract ZIP
+      - name: Extract FlashForge Project ZIP
         shell: bash
         run: |
           set -euo pipefail
 
-          mapfile -d '' zips < <(
+          mapfile -d '' ZIP_FILES < <(
             find "$GITHUB_WORKSPACE" \
               -maxdepth 1 \
               -type f \
-              -iname '*.zip' \
+              -iname "*.zip" \
               -print0
           )
 
-          if [ "${#zips[@]}" -eq 0 ]; then
+          if [ "${#ZIP_FILES[@]}" -eq 0 ]; then
             echo "ERROR: No ZIP file found in repository root."
             exit 1
           fi
 
-          if [ "${#zips[@]}" -ne 1 ]; then
-            echo "ERROR: Upload only ONE ZIP file to the repository root."
+          if [ "${#ZIP_FILES[@]}" -ne 1 ]; then
+            echo "ERROR: Only ONE ZIP file is allowed."
             exit 1
           fi
 
-          echo "ZIP found: ${zips[0]}"
+          ZIP_FILE="${ZIP_FILES[0]}"
 
-          mkdir -p "$RUNNER_TEMP/flashforge-extracted"
-          unzip -q "${zips[0]}" -d "$RUNNER_TEMP/flashforge-extracted"
+          echo "Found ZIP: $ZIP_FILE"
 
-          # Find the actual Android project root.
-          mapfile -t project_roots < <(
-            find "$RUNNER_TEMP/flashforge-extracted" \
+          EXTRACT_DIR="$RUNNER_TEMP/flashforge-source"
+
+          mkdir -p "$EXTRACT_DIR"
+
+          unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
+
+          # Find the Android project root
+          mapfile -t PROJECT_ROOTS < <(
+            find "$EXTRACT_DIR" \
               -type f \
-              -name 'settings.gradle.kts' \
+              -name "settings.gradle.kts" \
               -printf '%h\n'
           )
 
-          if [ "${#project_roots[@]}" -ne 1 ]; then
+          if [ "${#PROJECT_ROOTS[@]}" -ne 1 ]; then
             echo "ERROR: Expected exactly one Android project."
-            echo "Found: ${#project_roots[@]}"
+            echo "Found: ${#PROJECT_ROOTS[@]}"
             exit 1
           fi
 
-          PROJECT_ROOT="${project_roots[0]}"
+          PROJECT_ROOT="${PROJECT_ROOTS[0]}"
 
           if [ ! -f "$PROJECT_ROOT/app/build.gradle.kts" ]; then
-            echo "ERROR: app/build.gradle.kts not found."
+            echo "ERROR: Android app module not found."
             exit 1
           fi
 
-          mkdir -p "$GITHUB_WORKSPACE/build-project"
+          BUILD_DIR="$GITHUB_WORKSPACE/build-project"
 
-          cp -a "$PROJECT_ROOT/." \
-            "$GITHUB_WORKSPACE/build-project/"
+          mkdir -p "$BUILD_DIR"
 
-          echo "Project extracted successfully."
-          echo "Project root: $PROJECT_ROOT"
+          cp -a "$PROJECT_ROOT/." "$BUILD_DIR/"
 
-          echo "BUILD_PROJECT=$GITHUB_WORKSPACE/build-project" \
-            >> "$GITHUB_ENV"
+          echo "BUILD_PROJECT=$BUILD_DIR" >> "$GITHUB_ENV"
 
-      # 3. Install Java 17
+          echo "FlashForge project extracted successfully."
+
+      # STEP 3: Setup Java 17
       - name: Set Up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # 4. Install Gradle 8.7
+      # STEP 4: Setup Gradle 8.7
       - name: Set Up Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
 
-      # 5. Install Android SDK
+      # STEP 5: Setup Android SDK
       - name: Set Up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
 
-      - name: Install Android SDK Packages
+      # STEP 6: Install Android SDK Packages
+      - name: Install Required Android SDK Packages
         shell: bash
         run: |
           set -euo pipefail
 
-          yes | sdkmanager --licenses >/dev/null || true
+          echo "Accepting Android SDK licenses..."
 
-          sdkmanager \
+          yes | sdkmanager --licenses
+
+          echo "Installing Android SDK 34..."
+
+          sdkmanager --install \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0"
 
-      # 6. Validate project configuration
-      - name: Check Android Project
+          echo "Android SDK installation completed."
+
+      # STEP 7: Verify Project Files
+      - name: Verify Android Project
         working-directory: ${{ env.BUILD_PROJECT }}
         shell: bash
         run: |
@@ -125,25 +143,48 @@ jobs:
           test -f app/build.gradle.kts
           test -f app/src/main/AndroidManifest.xml
 
-          echo "Android project structure verified."
+          echo "Project structure verified."
 
-      # 7. Run tests, lint and compile APK
-      - name: Build FlashForge Debug APK
+          echo "Android SDK:"
+          sdkmanager --list_installed
+
+          echo "Java:"
+          java -version
+
+          echo "Gradle:"
+          gradle --version
+
+      # STEP 8: Run Unit Tests
+      - name: Run Unit Tests
         working-directory: ${{ env.BUILD_PROJECT }}
-        shell: bash
         run: |
-          set -euo pipefail
+          gradle \
+            testDebugUnitTest \
+            --no-daemon \
+            --stacktrace
 
+      # STEP 9: Run Android Lint
+      - name: Run Android Lint
+        working-directory: ${{ env.BUILD_PROJECT }}
+        run: |
+          gradle \
+            lintDebug \
+            --no-daemon \
+            --stacktrace
+
+      # STEP 10: Build Debug APK
+      - name: Compile FlashForge APK
+        working-directory: ${{ env.BUILD_PROJECT }}
+        run: |
           gradle \
             clean \
-            testDebugUnitTest \
-            lintDebug \
             assembleDebug \
+            --no-daemon \
             --no-build-cache \
             --stacktrace
 
-      # 8. Verify generated APK
-      - name: Verify APK
+      # STEP 11: Verify APK
+      - name: Verify Generated APK
         working-directory: ${{ env.BUILD_PROJECT }}
         shell: bash
         run: |
@@ -152,29 +193,31 @@ jobs:
           APK="app/build/outputs/apk/debug/app-debug.apk"
 
           if [ ! -s "$APK" ]; then
-            echo "ERROR: Debug APK was not generated."
+            echo "ERROR: APK file was not generated."
             exit 1
           fi
 
-          echo "APK successfully generated:"
+          echo "APK BUILD SUCCESSFUL"
+
           ls -lh "$APK"
 
-      # 9. Upload APK and reports
+      # STEP 12: Upload APK Artifact
       - name: Upload FlashForge APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: FlashForge-v1.52-debug-APK
+          name: FlashForge-v1.52-APK
           path: |
-            build-project/app/build/outputs/apk/debug/*.apk
+            build-project/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload Build and Test Reports
+      # STEP 13: Upload Build Reports
+      - name: Upload Build Reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: FlashForge-v1.52-build-reports
+          name: FlashForge-v1.52-Build-Reports
           path: |
             build-project/app/build/reports/**
           if-no-files-found: warn
